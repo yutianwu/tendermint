@@ -1,4 +1,4 @@
-// + build gcc
+//+build gcc
 
 package db
 
@@ -7,41 +7,39 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/jmhodges/levigo"
+	"github.com/tecbot/gorocksdb"
 )
 
 func init() {
 	dbCreator := func(name string, dir string, opt interface{}) (DB, error) {
-		return NewCLevelDB(name, dir)
+		return NewRocksDB(name, dir)
 	}
-	registerDBCreator(LevelDBBackend, dbCreator, true)
-	registerDBCreator(CLevelDBBackend, dbCreator, false)
+	registerDBCreator(RocksDBBackend, dbCreator, true)
 }
 
-var _ DB = (*CLevelDB)(nil)
+var _ DB = (*RocksDB)(nil)
 
-type CLevelDB struct {
-	db     *levigo.DB
-	ro     *levigo.ReadOptions
-	wo     *levigo.WriteOptions
-	woSync *levigo.WriteOptions
+type RocksDB struct {
+	db     *gorocksdb.DB
+	ro     *gorocksdb.ReadOptions
+	wo     *gorocksdb.WriteOptions
+	woSync *gorocksdb.WriteOptions
 }
 
-func NewCLevelDB(name string, dir string) (*CLevelDB, error) {
+func NewRocksDB(name string, dir string) (*RocksDB, error) {
 	dbPath := filepath.Join(dir, name+".db")
 
-	opts := levigo.NewOptions()
-	opts.SetCache(levigo.NewLRUCache(1 << 30))
+	opts := gorocksdb.NewDefaultOptions()
 	opts.SetCreateIfMissing(true)
-	db, err := levigo.Open(dbPath, opts)
+	db, err := gorocksdb.OpenDb(opts, dbPath)
 	if err != nil {
 		return nil, err
 	}
-	ro := levigo.NewReadOptions()
-	wo := levigo.NewWriteOptions()
-	woSync := levigo.NewWriteOptions()
+	ro := gorocksdb.NewDefaultReadOptions()
+	wo := gorocksdb.NewDefaultWriteOptions()
+	woSync := gorocksdb.NewDefaultWriteOptions()
 	woSync.SetSync(true)
-	database := &CLevelDB{
+	database := &RocksDB{
 		db:     db,
 		ro:     ro,
 		wo:     wo,
@@ -51,22 +49,22 @@ func NewCLevelDB(name string, dir string) (*CLevelDB, error) {
 }
 
 // Implements DB.
-func (db *CLevelDB) Get(key []byte) []byte {
+func (db *RocksDB) Get(key []byte) []byte {
 	key = nonNilBytes(key)
 	res, err := db.db.Get(db.ro, key)
 	if err != nil {
 		panic(err)
 	}
-	return res
+	return res.Data()
 }
 
 // Implements DB.
-func (db *CLevelDB) Has(key []byte) bool {
+func (db *RocksDB) Has(key []byte) bool {
 	return db.Get(key) != nil
 }
 
 // Implements DB.
-func (db *CLevelDB) Set(key []byte, value []byte) {
+func (db *RocksDB) Set(key []byte, value []byte) {
 	key = nonNilBytes(key)
 	value = nonNilBytes(value)
 	err := db.db.Put(db.wo, key, value)
@@ -76,7 +74,7 @@ func (db *CLevelDB) Set(key []byte, value []byte) {
 }
 
 // Implements DB.
-func (db *CLevelDB) SetSync(key []byte, value []byte) {
+func (db *RocksDB) SetSync(key []byte, value []byte) {
 	key = nonNilBytes(key)
 	value = nonNilBytes(value)
 	err := db.db.Put(db.woSync, key, value)
@@ -86,7 +84,7 @@ func (db *CLevelDB) SetSync(key []byte, value []byte) {
 }
 
 // Implements DB.
-func (db *CLevelDB) Delete(key []byte) {
+func (db *RocksDB) Delete(key []byte) {
 	key = nonNilBytes(key)
 	err := db.db.Delete(db.wo, key)
 	if err != nil {
@@ -95,7 +93,7 @@ func (db *CLevelDB) Delete(key []byte) {
 }
 
 // Implements DB.
-func (db *CLevelDB) DeleteSync(key []byte) {
+func (db *RocksDB) DeleteSync(key []byte) {
 	key = nonNilBytes(key)
 	err := db.db.Delete(db.woSync, key)
 	if err != nil {
@@ -103,20 +101,20 @@ func (db *CLevelDB) DeleteSync(key []byte) {
 	}
 }
 
-func (db *CLevelDB) DB() *levigo.DB {
+func (db *RocksDB) DB() *gorocksdb.DB {
 	return db.db
 }
 
 // Implements DB.
-func (db *CLevelDB) Close() {
+func (db *RocksDB) Close() {
 	db.db.Close()
-	db.ro.Close()
-	db.wo.Close()
-	db.woSync.Close()
+	db.ro.Destroy()
+	db.wo.Destroy()
+	db.woSync.Destroy()
 }
 
 // Implements DB.
-func (db *CLevelDB) Print() {
+func (db *RocksDB) Print() {
 	itr := db.Iterator(nil, nil)
 	defer itr.Close()
 	for ; itr.Valid(); itr.Next() {
@@ -127,7 +125,7 @@ func (db *CLevelDB) Print() {
 }
 
 // Implements DB.
-func (db *CLevelDB) Stats() map[string]string {
+func (db *RocksDB) Stats() map[string]string {
 	keys := []string{
 		"leveldb.aliveiters",
 		"leveldb.alivesnaps",
@@ -141,7 +139,7 @@ func (db *CLevelDB) Stats() map[string]string {
 
 	stats := make(map[string]string, len(keys))
 	for _, key := range keys {
-		str := db.db.PropertyValue(key)
+		str := db.db.GetProperty(key)
 		stats[key] = str
 	}
 	return stats
@@ -151,28 +149,28 @@ func (db *CLevelDB) Stats() map[string]string {
 // Batch
 
 // Implements DB.
-func (db *CLevelDB) NewBatch() Batch {
-	batch := levigo.NewWriteBatch()
-	return &cLevelDBBatch{db, batch}
+func (db *RocksDB) NewBatch() Batch {
+	batch := gorocksdb.NewWriteBatch()
+	return &rocksDBBatch{db, batch}
 }
 
-type cLevelDBBatch struct {
-	db    *CLevelDB
-	batch *levigo.WriteBatch
+type rocksDBBatch struct {
+	db    *RocksDB
+	batch *gorocksdb.WriteBatch
 }
 
 // Implements Batch.
-func (mBatch *cLevelDBBatch) Set(key, value []byte) {
+func (mBatch *rocksDBBatch) Set(key, value []byte) {
 	mBatch.batch.Put(key, value)
 }
 
 // Implements Batch.
-func (mBatch *cLevelDBBatch) Delete(key []byte) {
+func (mBatch *rocksDBBatch) Delete(key []byte) {
 	mBatch.batch.Delete(key)
 }
 
 // Implements Batch.
-func (mBatch *cLevelDBBatch) Write() {
+func (mBatch *rocksDBBatch) Write() {
 	err := mBatch.db.db.Write(mBatch.db.wo, mBatch.batch)
 	if err != nil {
 		panic(err)
@@ -180,7 +178,7 @@ func (mBatch *cLevelDBBatch) Write() {
 }
 
 // Implements Batch.
-func (mBatch *cLevelDBBatch) WriteSync() {
+func (mBatch *rocksDBBatch) WriteSync() {
 	err := mBatch.db.db.Write(mBatch.db.woSync, mBatch.batch)
 	if err != nil {
 		panic(err)
@@ -188,8 +186,8 @@ func (mBatch *cLevelDBBatch) WriteSync() {
 }
 
 // Implements Batch.
-func (mBatch *cLevelDBBatch) Close() {
-	mBatch.batch.Close()
+func (mBatch *rocksDBBatch) Close() {
+	mBatch.batch.Destroy()
 }
 
 //----------------------------------------
@@ -197,26 +195,26 @@ func (mBatch *cLevelDBBatch) Close() {
 // NOTE This is almost identical to db/go_level_db.Iterator
 // Before creating a third version, refactor.
 
-func (db *CLevelDB) Iterator(start, end []byte) Iterator {
+func (db *RocksDB) Iterator(start, end []byte) Iterator {
 	itr := db.db.NewIterator(db.ro)
-	return newCLevelDBIterator(itr, start, end, false)
+	return newRocksDBIterator(itr, start, end, false)
 }
 
-func (db *CLevelDB) ReverseIterator(start, end []byte) Iterator {
+func (db *RocksDB) ReverseIterator(start, end []byte) Iterator {
 	itr := db.db.NewIterator(db.ro)
-	return newCLevelDBIterator(itr, start, end, true)
+	return newRocksDBIterator(itr, start, end, true)
 }
 
 var _ Iterator = (*cLevelDBIterator)(nil)
 
-type cLevelDBIterator struct {
-	source     *levigo.Iterator
+type rocksDBIterator struct {
+	source     *gorocksdb.Iterator
 	start, end []byte
 	isReverse  bool
 	isInvalid  bool
 }
 
-func newCLevelDBIterator(source *levigo.Iterator, start, end []byte, isReverse bool) *cLevelDBIterator {
+func newRocksDBIterator(source *gorocksdb.Iterator, start, end []byte, isReverse bool) *rocksDBIterator {
 	if isReverse {
 		if end == nil {
 			source.SeekToLast()
@@ -224,7 +222,7 @@ func newCLevelDBIterator(source *levigo.Iterator, start, end []byte, isReverse b
 			source.Seek(end)
 			if source.Valid() {
 				eoakey := source.Key() // end or after key
-				if bytes.Compare(end, eoakey) <= 0 {
+				if bytes.Compare(end, eoakey.Data()) <= 0 {
 					source.Prev()
 				}
 			} else {
@@ -238,7 +236,7 @@ func newCLevelDBIterator(source *levigo.Iterator, start, end []byte, isReverse b
 			source.Seek(start)
 		}
 	}
-	return &cLevelDBIterator{
+	return &rocksDBIterator{
 		source:    source,
 		start:     start,
 		end:       end,
@@ -247,11 +245,11 @@ func newCLevelDBIterator(source *levigo.Iterator, start, end []byte, isReverse b
 	}
 }
 
-func (itr cLevelDBIterator) Domain() ([]byte, []byte) {
+func (itr rocksDBIterator) Domain() ([]byte, []byte) {
 	return itr.start, itr.end
 }
 
-func (itr cLevelDBIterator) Valid() bool {
+func (itr rocksDBIterator) Valid() bool {
 
 	// Once invalid, forever invalid.
 	if itr.isInvalid {
@@ -270,7 +268,7 @@ func (itr cLevelDBIterator) Valid() bool {
 	// If key is end or past it, invalid.
 	var start = itr.start
 	var end = itr.end
-	var key = itr.source.Key()
+	var key = itr.source.Key().Data()
 	if itr.isReverse {
 		if start != nil && bytes.Compare(key, start) < 0 {
 			itr.isInvalid = true
@@ -287,19 +285,19 @@ func (itr cLevelDBIterator) Valid() bool {
 	return true
 }
 
-func (itr cLevelDBIterator) Key() []byte {
+func (itr rocksDBIterator) Key() []byte {
 	itr.assertNoError()
 	itr.assertIsValid()
-	return itr.source.Key()
+	return itr.source.Key().Data()
 }
 
-func (itr cLevelDBIterator) Value() []byte {
+func (itr rocksDBIterator) Value() []byte {
 	itr.assertNoError()
 	itr.assertIsValid()
-	return itr.source.Value()
+	return itr.source.Value().Data()
 }
 
-func (itr cLevelDBIterator) Next() {
+func (itr rocksDBIterator) Next() {
 	itr.assertNoError()
 	itr.assertIsValid()
 	if itr.isReverse {
@@ -309,17 +307,17 @@ func (itr cLevelDBIterator) Next() {
 	}
 }
 
-func (itr cLevelDBIterator) Close() {
+func (itr rocksDBIterator) Close() {
 	itr.source.Close()
 }
 
-func (itr cLevelDBIterator) assertNoError() {
-	if err := itr.source.GetError(); err != nil {
+func (itr rocksDBIterator) assertNoError() {
+	if err := itr.source.Err(); err != nil {
 		panic(err)
 	}
 }
 
-func (itr cLevelDBIterator) assertIsValid() {
+func (itr rocksDBIterator) assertIsValid() {
 	if !itr.Valid() {
 		panic("cLevelDBIterator is invalid")
 	}

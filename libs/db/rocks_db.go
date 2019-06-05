@@ -29,7 +29,10 @@ type RocksDB struct {
 func NewRocksDB(name string, dir string) (*RocksDB, error) {
 	dbPath := filepath.Join(dir, name+".db")
 
+	bbto := gorocksdb.NewDefaultBlockBasedTableOptions()
+	bbto.SetBlockCache(gorocksdb.NewLRUCache(1 << 30))
 	opts := gorocksdb.NewDefaultOptions()
+	opts.SetBlockBasedTableFactory(bbto)
 	opts.SetCreateIfMissing(true)
 	db, err := gorocksdb.OpenDb(opts, dbPath)
 	if err != nil {
